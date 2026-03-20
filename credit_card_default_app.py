@@ -1,9 +1,7 @@
 # credit_card_default_app_complete.py
 import os
 # ===================== FILE PATHS =====================
-RAW_DATA_PATH = 'UCI_Credit_Card.csv'
-CLEAN_DATA_PATH = 'cleaned_data.csv'
-MODEL_PATH = 'trained_models.pkl'
+ 
 
 import streamlit as st
 import pandas as pd
@@ -376,24 +374,7 @@ def train_models(_preprocessor, X_train, y_train, numerical_features, categorica
             models['Gradient Boosting'] = gb_pipeline
             training_status['Gradient Boosting'] = '✅ Success'
     except Exception as e:
-        training_status['Gradient Boosting'] = f'❌ Failed: {str(e)[:50]}...'
-    
-    return models, training_status, feature_names
-
-def evaluate_models(models_dict, X_test, y_test, threshold=0.3):
-    """Evaluate all models and return metrics"""
-    results = []
-    y_pred_proba_dict = {}
-    failed_models = []
-    
-    for name, model_info in models_dict.items():
-        try:
-            if name == 'CatBoost':
-                # Handle CatBoost separately
-                X_test_processed = model_info['preprocessor'].transform(X_test)
-                y_pred_proba = model_info['model'].predict_proba(X_test_processed)[:, 1]
-            else:
-                # Handle sklearn pipelines
+         
                 y_pred_proba = model_info.predict_proba(X_test)[:, 1]
             
             y_pred = (y_pred_proba >= threshold).astype(int)
