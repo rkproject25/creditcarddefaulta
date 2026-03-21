@@ -1,7 +1,9 @@
 # credit_card_default_app_complete.py
 import os
 # ===================== FILE PATHS =====================
- 
+RAW_DATA_PATH = 'UCI_Credit_Card.csv'
+CLEAN_DATA_PATH = 'cleaned_data.csv'
+MODEL_PATH = 'trained_models.pkl'
 
 import streamlit as st
 import pandas as pd
@@ -21,18 +23,13 @@ from sklearn.model_selection import train_test_split, cross_val_score, Stratifie
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, LabelEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-# RandomForest
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC
+# RandomForest - keeping only Random Forest
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (accuracy_score, precision_score, recall_score, f1_score,
                             confusion_matrix, classification_report, roc_curve, roc_auc_score)
 
-# XGBoost and CatBoost
+# XGBoost - keeping only XGBoost
 from xgboost import XGBClassifier
-from catboost import CatBoostClassifier, Pool
 
 # Set page config
 st.set_page_config(
@@ -196,22 +193,7 @@ def load_clean_data():
 def save_models(models_dict):
     """Save models using joblib with error handling"""
     try:
-        # Create a serializable version of models
-        serializable_models = {}
-        for name, model in models_dict.items():
-            if name == 'CatBoost':
-                # For CatBoost, save the model and preprocessor separately
-                serializable_models[name] = {
-                    'type': 'catboost',
-                    'model': model['model'],
-                    'feature_names': model.get('feature_names', None)
-                }
-            else:
-                serializable_models[name] = {
-                    'type': 'sklearn',
-                    'pipeline': model
-                }
-        joblib.dump(serializable_models, MODEL_PATH)
+        joblib.dump(models_dict, MODEL_PATH)
         return True
     except Exception as e:
         st.error(f"Error saving models: {str(e)}")
@@ -221,14 +203,7 @@ def load_models():
     """Load models with error handling"""
     if os.path.exists(MODEL_PATH):
         try:
-            serializable_models = joblib.load(MODEL_PATH)
-            models = {}
-            for name, model_info in serializable_models.items():
-                if model_info['type'] == 'catboost':
-                    models[name] = model_info['model']
-                else:
-                    models[name] = model_info['pipeline']
-            return models
+            return joblib.load(MODEL_PATH)
         except Exception as e:
             st.error(f"Error loading models: {str(e)}")
             return None
@@ -268,7 +243,7 @@ def get_feature_names(preprocessor, numerical_features, categorical_features):
     return all_feature_names
 
 def train_models(_preprocessor, X_train, y_train, numerical_features, categorical_features):
-    """Train all models with proper error handling"""
+    """Train Random Forest and XGBoost models with proper error handling"""
     
     models = {}
     training_status = {}
@@ -321,61 +296,18 @@ def train_models(_preprocessor, X_train, y_train, numerical_features, categorica
         training_status['XGBoost'] = f'❌ Failed: {str(e)[:50]}...'
         st.error(f"XGBoost training failed: {str(e)}")
     
-    # 3. CatBoost - Separate handling
-    try:
-        with st.spinner("Training CatBoost..."):
-            # Preprocess data for CatBoost
-            X_train_processed = _preprocessor.transform(X_train)
-            
-            # Create feature names for CatBoost
-            cat_features_indices = []  # CatBoost will handle encoded features automatically
-            
-            # Train CatBoost
-            catboost_model = CatBoostClassifier(
-                iterations=100,
-                learning_rate=0.03,
-                depth=6,
-                random_seed=42,
-                verbose=0,
-                early_stopping_rounds=50,
-                allow_writing_files=False
-            )
-            
-            catboost_model.fit(
-                X_train_processed, y_train,
-                cat_features=cat_features_indices,
-                verbose=False
-            )
-            
-            # Store CatBoost model separately
-            models['CatBoost'] = {
-                'model': catboost_model,
-                'preprocessor': _preprocessor,
-                'feature_names': feature_names
-            }
-            training_status['CatBoost'] = '✅ Success'
-    except Exception as e:
-        training_status['CatBoost'] = f'❌ Failed: {str(e)[:50]}...'
-        st.error(f"CatBoost training failed: {str(e)}")
+    return models, training_status, feature_names
+
+def evaluate_models(models_dict, X_test, y_test, threshold=0.3):
+    """Evaluate Random Forest and XGBoost models and return metrics"""
+    results = []
+    y_pred_proba_dict = {}
+    failed_models = []
     
-    # 4. Gradient Boosting (additional model)
-    try:
-        with st.spinner("Training Gradient Boosting..."):
-            gb_pipeline = Pipeline(steps=[
-                ('preprocessor', _preprocessor),
-                ('classifier', GradientBoostingClassifier(
-                    n_estimators=100,
-                    max_depth=5,
-                    learning_rate=0.1,
-                    random_state=42
-                ))
-            ])
-            gb_pipeline.fit(X_train, y_train)
-            models['Gradient Boosting'] = gb_pipeline
-            training_status['Gradient Boosting'] = '✅ Success'
-    except Exception as e:
-         
-                y_pred_proba = model_info.predict_proba(X_test)[:, 1]
+    for name, pipeline in models_dict.items():
+        try:
+            # Handle sklearn pipelines
+            y_pred_proba = pipeline.predict_proba(X_test)[:, 1]
             
             y_pred = (y_pred_proba >= threshold).astype(int)
             y_pred_proba_dict[name] = y_pred_proba
@@ -404,19 +336,13 @@ def train_models(_preprocessor, X_train, y_train, numerical_features, categorica
 def get_feature_importance(model_info, feature_names):
     """Extract feature importance from model"""
     try:
-        if isinstance(model_info, dict) and 'model' in model_info:  # CatBoost
-            importance = model_info['model'].get_feature_importance()
+        # Sklearn pipeline
+        if hasattr(model_info.named_steps['classifier'], 'feature_importances_'):
+            importance = model_info.named_steps['classifier'].feature_importances_
             return pd.DataFrame({
                 'feature': feature_names,
                 'importance': importance
             }).sort_values('importance', ascending=False)
-        else:  # Sklearn pipeline
-            if hasattr(model_info.named_steps['classifier'], 'feature_importances_'):
-                importance = model_info.named_steps['classifier'].feature_importances_
-                return pd.DataFrame({
-                    'feature': feature_names,
-                    'importance': importance
-                }).sort_values('importance', ascending=False)
     except:
         return None
 
@@ -445,7 +371,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### About")
 st.sidebar.info(
     "This application predicts credit card default using "
-    "multiple machine learning algorithms. Built with Streamlit."
+    "Random Forest and XGBoost algorithms. Built with Streamlit."
 )
 
 # ===================== MAIN CONTENT =====================
@@ -464,7 +390,6 @@ if not st.session_state.model_trained:
         st.session_state.models = models
         st.session_state.model_trained = True
 
-# Main content based on selected tab
 # Main content based on selected tab
 if selected_tab == "🏠 Project Overview":
     st.markdown("<h1 class='main-header'>Credit Card Default Prediction</h1>", unsafe_allow_html=True)
@@ -500,7 +425,7 @@ if selected_tab == "🏠 Project Overview":
                 categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
                 st.write(f"• {len(categorical_cols)} categorical features")
             
-            with col2:
+            with col2:  
                 st.markdown("**Memory Usage:**")
                 memory_usage = df.memory_usage(deep=True).sum() / 1024**2
                 st.write(f"• {memory_usage:.2f} MB")
@@ -539,7 +464,7 @@ if selected_tab == "🏠 Project Overview":
         st.markdown("""
         ### 🚀 Features
         - **Data Preprocessing**: Automated cleaning and feature engineering
-        - **Multiple Models**: Random Forest, XGBoost, CatBoost, Gradient Boosting
+        - **Two Powerful Models**: Random Forest and XGBoost
         - **Model Comparison**: Side-by-side performance metrics
         - **Feature Importance**: Understand key risk factors
         - **Interactive Predictions**: Test with custom inputs
@@ -593,7 +518,7 @@ elif selected_tab == "⚙️ Preprocess & Train":
         st.markdown("### 🤖 Model Training")
         if st.button("🚀 Train Models", key="train_btn"):
             if st.session_state.data_loaded:
-                with st.spinner("Training models... This may take a few minutes."):
+                with st.spinner("Training Random Forest and XGBoost models... This may take a few moments."):
                     df = st.session_state.df
                     
                     # Prepare data
@@ -793,9 +718,7 @@ elif selected_tab == "🔍 Feature Importance":
             st.error("Feature names not available. Please retrain models.")
         else:
             # Model selection
-            available_models = [name for name in models.keys() 
-                              if name != 'CatBoost' or 
-                              (name == 'CatBoost' and hasattr(models[name]['model'], 'get_feature_importance'))]
+            available_models = list(models.keys())
             
             selected_model = st.selectbox("Select Model for Feature Importance:", available_models)
             
@@ -805,20 +728,12 @@ elif selected_tab == "🔍 Feature Importance":
                 # Get feature importance
                 importance_df = None
                 
-                if selected_model == 'CatBoost':
-                    if hasattr(model_info['model'], 'get_feature_importance'):
-                        importance = model_info['model'].get_feature_importance()
-                        importance_df = pd.DataFrame({
-                            'feature': feature_names,
-                            'importance': importance
-                        }).sort_values('importance', ascending=False)
-                else:
-                    if hasattr(model_info.named_steps['classifier'], 'feature_importances_'):
-                        importance = model_info.named_steps['classifier'].feature_importances_
-                        importance_df = pd.DataFrame({
-                            'feature': feature_names,
-                            'importance': importance
-                        }).sort_values('importance', ascending=False)
+                if hasattr(model_info.named_steps['classifier'], 'feature_importances_'):
+                    importance = model_info.named_steps['classifier'].feature_importances_
+                    importance_df = pd.DataFrame({
+                        'feature': feature_names,
+                        'importance': importance
+                    }).sort_values('importance', ascending=False)
                 
                 if importance_df is not None:
                     st.markdown(f"### Top 20 Most Important Features - {selected_model}")
@@ -1060,13 +975,9 @@ elif selected_tab == "⚠️ Default Prediction":
             results = []
             valid_predictions = []
             
-            for name, model_info in models.items():
+            for name, pipeline in models.items():
                 try:
-                    if name == 'CatBoost':
-                        X_processed = model_info['preprocessor'].transform(input_data)
-                        proba = model_info['model'].predict_proba(X_processed)[0][1]
-                    else:
-                        proba = model_info.predict_proba(input_data)[0][1]
+                    proba = pipeline.predict_proba(input_data)[0][1]
                     
                     results.append({
                         'Model': name,
@@ -1322,13 +1233,9 @@ elif selected_tab == "🔄 Scenario Simulator":
                 
                 # Get predictions
                 probs = []
-                for name, model_info in models.items():
+                for name, pipeline in models.items():
                     try:
-                        if name == 'CatBoost':
-                            X_processed = model_info['preprocessor'].transform(input_data)
-                            prob = model_info['model'].predict_proba(X_processed)[0][1]
-                        else:
-                            prob = model_info.predict_proba(input_data)[0][1]
+                        prob = pipeline.predict_proba(input_data)[0][1]
                         probs.append(prob)
                     except:
                         pass
@@ -1364,7 +1271,7 @@ elif selected_tab == "💡 Business Insights":
         st.markdown("""
         ### Key Business Insights
         
-        Based on the analysis of credit card default data, here are the key insights and recommendations:
+        Based on the analysis of credit card default data using Random Forest and XGBoost, here are the key insights and recommendations:
         """)
         
         col1, col2 = st.columns(2)
@@ -1489,7 +1396,7 @@ st.markdown("---")
 st.markdown(
     """
     <div style='text-align: center; color: gray; padding: 10px;'>
-        Credit Card Default Prediction App | Built with Streamlit, Python, and Machine Learning
+        Credit Card Default Prediction App | Built with Random Forest & XGBoost | Streamlit, Python, and Machine Learning
     </div>
     """,
     unsafe_allow_html=True
